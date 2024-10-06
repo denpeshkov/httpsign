@@ -1,0 +1,47 @@
+### JetBrains template
+
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+.idea_modules/
+
+### Go template
+
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+testdata/
+bin/
+
+### VSCode
+
+.vscode/
+
+# Local History for Visual Studio Code
+.history/
+
+# Built Visual Studio Code Extensions
+*.vsix
+
+### VisualStudioCode Patch ###
+# Ignore all local history of files
+.history
+.ionide
+
+### MacOS
+
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Trashes
+
+### Environment variables
+.env*

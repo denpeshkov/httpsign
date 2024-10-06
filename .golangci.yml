@@ -1,0 +1,34 @@
+---
+run:
+  concurrency: 4
+  timeout: 2m
+  issues-exit-code: 1
+
+output:
+  formats:
+    - format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
+
+linters:
+  # We'll track the golangci-lint default linters manually
+  # instead of letting them change without our control.
+  disable-all: true
+  enable:
+    # golangci-lint defaults:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+    # Our own extras:
+    - bodyclose
+    - exhaustive
+    - goimports
+    - gosec
+    - misspell
+    - prealloc
+    - unconvert
+    - unparam
