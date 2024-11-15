@@ -1,12 +1,22 @@
 package httpsign
 
 import (
+	"context"
+	"crypto"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
+
+	"github.com/denpeshkov/httpsign/hmac"
+)
+
+const (
+	key = "test-key"
+	kid = "test-key-id"
 )
 
 func TestQueryEncode(t *testing.T) {
@@ -41,33 +51,32 @@ func loggingErrorHandler(t *testing.T) func(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-type stubSigner struct{}
+type staticSignerSource struct{ s Signer }
 
-func (stubSigner) Sign(message []byte) ([]byte, error) {
-	return message, nil
-}
+func (s staticSignerSource) Signer(context.Context, string) (Signer, error) { return s.s, nil }
 
-type stubVerifier struct{}
+type staticVerifierSource struct{ v Verifier }
 
-func (stubVerifier) Verify(message []byte, signature []byte) (bool, error) {
-	return string(message) == string(signature), nil
-}
+func (s staticVerifierSource) Verifier(context.Context, string) (Verifier, error) { return s.v, nil }
 
-func TestHTTP(t *testing.T) {
+func TestTransportMiddleware(t *testing.T) {
 	urls := []string{
 		"", "?k1=v1", "?k1=v&k2=v", "?k1=v1&k1=v2&k2=v",
 		"/", "/?k1=v1", "/?k1=v&k2=v", "/?k1=v1&k1=v2&k2=v",
 		"/p", "/p?k1=v1", "/p?k1=v&k2=v", "/p?k1=v1&k1=v2&k2=v",
 		"/p/h", "/p/h?k1=v", "/p/h?k1=v&k2=v", "/p/h?k1=v1&k1=v2&k2=v",
 	}
-	c := http.Client{Transport: NewTransport(stubSigner{})}
-	m := NewMiddleware(stubVerifier{})
-	m.ErrorHandler = loggingErrorHandler(t)
+	sigver, err := hmac.New([]byte(key), crypto.SHA256)
+	if err != nil {
+		t.Fatalf("Failed to create HMAC: %v", err)
+	}
+	c := http.Client{Transport: NewTransport(staticSignerSource{sigver}, kid)}
+	mw := Middleware(staticVerifierSource{sigver}, loggingErrorHandler(t))
 
 	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "test response body")
 	})
-	h = m.Handler(h)
+	h = mw(h)
 
 	s := httptest.NewServer(h)
 	defer s.Close()
@@ -75,11 +84,11 @@ func TestHTTP(t *testing.T) {
 	for _, u := range urls {
 		u, err := url.JoinPath(s.URL, u)
 		if err != nil {
-			t.Fatalf("JoinPath(%q, %q) error: %v", s.URL, u, err)
+			t.Fatalf("JoinPath(%q, %q) failed: %v", s.URL, u, err)
 		}
 		resp, err := c.Get(u)
 		if err != nil {
-			t.Fatalf("Get(%s) error: %v", u, err)
+			t.Fatalf("Get(%s) failed: %v", u, err)
 		}
 		defer resp.Body.Close()
 
@@ -91,5 +100,60 @@ func TestHTTP(t *testing.T) {
 			}
 			t.Logf("Response body: %q", body)
 		}
+	}
+}
+
+func TestMiddleware(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "http://example.com", nil)
+	if err != nil {
+		t.Fatalf("Failed to build request: %v", err)
+	}
+
+	sigver, err := hmac.New([]byte(key), crypto.SHA256)
+	if err != nil {
+		t.Fatalf("Failed to create HMAC: %v", err)
+	}
+
+	if err := Sign(sigver, time.Now(), req); err != nil {
+		t.Fatalf("Sign() failed: %v", err)
+	}
+	req.Header.Add(KidHeader, "kid")
+
+	tests := []struct {
+		name    string
+		headerf func(h http.Header)
+	}{
+		{
+			name:    "missing " + TimestampHeader,
+			headerf: func(h http.Header) { h.Del(TimestampHeader) },
+		},
+		{
+			name:    "missing " + KidHeader,
+			headerf: func(h http.Header) { h.Del(KidHeader) },
+		},
+		{
+			name:    "missing " + SignatureHeader,
+			headerf: func(h http.Header) { h.Del(SignatureHeader) },
+		},
+		{
+			name:    "invalid signature",
+			headerf: func(h http.Header) { h.Set(SignatureHeader, h.Get(SignatureHeader)+"malformed") },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := req.Clone(context.Background())
+			tt.headerf(r.Header)
+			w := httptest.NewRecorder()
+
+			h := Middleware(staticVerifierSource{sigver}, loggingErrorHandler(t))(http.NotFoundHandler())
+			h.ServeHTTP(w, r)
+
+			//nolint:bodyclose // Returned body is a NopCloser.
+			if c := w.Result().StatusCode; c != http.StatusUnauthorized {
+				t.Errorf("Status = %d, want %d", c, http.StatusUnauthorized)
+			}
+		})
 	}
 }
